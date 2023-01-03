@@ -131,28 +131,28 @@ class Resnet18With4HeadsDsob(nn.Module):
         x = self.init_block(x)
         y = []
         w = []
+        evals = []
         weights = torch.ones(x.size(0), 1).to(utils.get_device())
         for hidden_block, head_block, eval_block, gamma in zip(self.hidden_blocks,
                                                                self.head_blocks,
                                                                self.eval_blocks,
                                                                self.gammas):
             x = hidden_block(x)
+            eval = torch.exp(eval_block(x))
             if self.train:
-                evals = torch.exp(eval_block(x))
                 # print(gamma)
                 # print(torch.sum(weights))
                 if gamma:
-                    t = self.time_function(evals, weights, gamma)
-                    consume_weights = weights * torch.exp(-t * evals)
+                    t = self.time_function(eval, weights, gamma)
+                    consume_weights = weights * torch.exp(-t * eval)
                 else:
                     consume_weights = weights
                 weights = weights - consume_weights
-                y.append(head_block(x))
-
                 w.append(consume_weights)
-            else:
-                y.append(head_block(x))
-        return y, w
+
+            y.append(head_block(x))
+            evals.append(eval)
+        return y, w, evals
 
 
 class Resnet18FrozenWith4HeadsDsob(Resnet18With4HeadsDsob):

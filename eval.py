@@ -18,7 +18,7 @@ def get_preds_earlyexiting(model: torch.nn.Module,
         for batch, (X, y) in enumerate(data_loader):
             X = X.to(device, non_blocking=True)
             y = y.to(device, non_blocking=True)
-            output, _ = model(X)
+            output, _, _ = model(X)
             y_preds = [y_pred.detach() for y_pred in output]
             batch_outputs.append(y_preds)
             batch_labels.append(y)

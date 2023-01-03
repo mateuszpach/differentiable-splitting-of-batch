@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=dsob
-#SBATCH --qos=quick
-#SBATCH --gres=gpu:1
+#SBATCH --qos=test
+#SBATCH --gres=gpu:0
 #SBATCH --mem=32G
-#SBATCH --cpus-per-task=8
-#SBATCH --partition=student
+#SBATCH --cpus-per-task=4
+#SBATCH --partition=cpu
 
 export MNIST_PATH=/shared/sets/datasets
 export CIFAR10_PATH=/shared/sets/datasets/cifar10
@@ -18,8 +18,8 @@ cd $HOME/differentiable-splitting-of-batch
 
 source activate differentiable-splitting-of-batch-cuda
 
-ARGS="--exp_id 33 \
-      --model_class resnet18_4heads \
+ARGS="--exp_id 30 \
+      --model_class resnet18_4heads_dsob \
       --dataset cifar10 \
       --epochs 50 \
       --batch_size 128 \
@@ -32,8 +32,8 @@ ARGS="--exp_id 33 \
 
 python -u train.py $ARGS
 
-ARGS="--exp_id 34 \
-      --model_class resnet18_4heads \
+ARGS="--exp_id 31 \
+      --model_class resnet18_4heads_dsob \
       --dataset cifar10 \
       --epochs 50 \
       --batch_size 128 \
@@ -46,8 +46,8 @@ ARGS="--exp_id 34 \
 
 python -u train.py $ARGS
 
-ARGS="--exp_id 35 \
-      --model_class resnet18_4heads \
+ARGS="--exp_id 32 \
+      --model_class resnet18_4heads_dsob \
       --dataset cifar10 \
       --epochs 50 \
       --batch_size 128 \

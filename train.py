@@ -10,7 +10,7 @@ from common import parser, LOSS_NAME_MAP, OPTIMIZER_NAME_MAP, SCHEDULER_NAME_MAP
 from datasets import DATASETS_NAME_MAP
 from eval import test_earlyexiting_classification
 from models import MODEL_NAME_MAP
-from plots import wandb_stats
+from plots import wandb_stats, wandb_summary
 import utils
 
 
@@ -76,7 +76,7 @@ def train(args):
             images = images.to(utils.get_device(), non_blocking=True)
             labels = labels.to(utils.get_device(), non_blocking=True)
 
-            outputs, consume_weights = model(images)
+            outputs, consume_weights, _ = model(images)
 
             loss = [criterion(head_outputs, labels) for head_outputs in outputs]
 
@@ -125,6 +125,7 @@ def train(args):
         #              f'train_loss={train_loss}\n'
         #              f'train_acc={[f"{x:.3f}" for x in train_acc]}')
 
+    wandb_summary(model, state)
 
 def main():
     args = parser.parse_args()

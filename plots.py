@@ -61,7 +61,7 @@ def splitting(model, state):
     confidence = [torch.max(x, dim=1).values for x in head_preds]
     output = [torch.max(x, dim=1).indices for x in head_preds]
 
-    data = list(zip(labels, # change to images if needed
+    data = list(zip(labels,  # change to images if needed
                     head_preds[0],
                     confidence[0],
                     output[0],
@@ -117,21 +117,126 @@ def splitting(model, state):
                "splitting avg": (correct[0] + correct[1] + correct[2] + correct[3]) / 256 / 4}, commit=False)
 
 
-def main():
-    torch.set_printoptions(edgeitems=5, sci_mode=False, linewidth=200)
-
-    # learning_stats(Path.cwd() / 'runs', 'cifar10_resnet18_frozen_4heads_EQMIVFDV_1')
-    # learning_stats(Path.cwd() / 'runs', 'cifar10_resnet18_4heads_PIUVA74Z_2')
-    # learning_stats(Path.cwd() / 'runs', 'mnist_resnet18_4heads_YBHRBB24_2')
-    # learning_stats(Path.cwd() / 'runs', 'mnist_resnet18_frozen_4heads_HQ6YUQG6_1')
-    # learning_stats(Path.cwd() / 'runs', 'cifar10_resnet18_4heads_PIUVA74Z_3')
-
-    # heads_stats(Path.cwd() / 'runs', 'cifar10_resnet18_frozen_4heads_EQMIVFDV_1')
-    # heads_stats(Path.cwd() / 'runs', 'cifar10_resnet18_4heads_PIUVA74Z_2')
-    # heads_stats(Path.cwd() / 'runs', 'mnist_resnet18_4heads_YBHRBB24_2')
-    # heads_stats(Path.cwd() / 'runs', 'mnist_resnet18_frozen_4heads_HQ6YUQG6_1')
-    # heads_stats(Path.cwd() / 'runs', 'cifar10_resnet18_4heads_PIUVA74Z_3')
+def wandb_summary(model, state):
+    if state['args'].model_class.endswith('dsob'):
+        # splitting_weights(model, state)
+        evals_vs_confidence(model, state)
 
 
-if __name__ == '__main__':
-    main()
+def splitting_weights(model, state):
+    model = copy.deepcopy(model)
+
+    _, _, test_data = DATASETS_NAME_MAP[state['args'].dataset]()
+    test_loader = get_loader(test_data, 32, shuffle=True)
+    _, weights, _ = model(next(iter(test_loader))[0])
+
+    weights = [torch.squeeze(w.detach()) for w in weights]
+
+    labels = list(range(32))
+    width = 0.9
+    fig, ax = plt.subplots()
+
+    y = torch.zeros_like(weights[0], requires_grad=False)
+    for i, w in enumerate(weights):
+        ax.bar(labels, w, width, bottom=y, label=f'Head {i}')
+        y += w
+
+    ax.set_ylabel('weights')
+    ax.set_title('Splitting weights')
+
+    wandb.log({"split weights": plt}, commit=True)
+
+
+def evals_vs_confidence(model, state):
+    model = copy.deepcopy(model)
+
+    _, _, test_data = DATASETS_NAME_MAP[state['args'].dataset]()
+    test_loader = get_loader(test_data, 256, shuffle=True)
+    head_preds, labels = get_preds_earlyexiting(model,
+                                                test_loader,
+                                                batches=0)
+
+    _, _, evals = model(next(iter(test_loader))[0])
+    head_preds = [nn.Softmax(dim=1)(x) for x in head_preds]
+    confidence = [torch.max(x, dim=1).values for x in head_preds]
+    output = [torch.max(x, dim=1).indices for x in head_preds]
+
+    data = list(zip(labels,  # change to images if needed
+                    head_preds[0],
+                    confidence[0],
+                    output[0],
+                    head_preds[1],
+                    confidence[1],
+                    output[1],
+                    head_preds[2],
+                    confidence[2],
+                    output[2],
+                    head_preds[3],
+                    confidence[3],
+                    output[3],
+                    labels))
+
+    data_tmp = data
+    data_head = [None] * 4
+    for i in range(4):
+        data_tmp.sort(key=lambda x: x[2 + 3 * i], reverse=True)
+        data_head[i], data_tmp = data_tmp[:64], data_tmp[64:]
+
+    correct = [0] * 4
+    for i in range(4):
+        for d in data_head[i]:
+            if d[3 + 3 * i] == d[13]:
+                correct[i] += 1
+
+    wandb.log({"eval vs conf: splitting conf head 0": correct[0] / 64,
+               "eval vs conf: splitting conf head 1": correct[1] / 64,
+               "eval vs conf: splitting conf head 2": correct[2] / 64,
+               "eval vs conf: splitting conf head 3": correct[3] / 64,
+               "eval vs conf: splitting conf avg": (correct[0] + correct[1] + correct[2] + correct[3]) / 256},
+              commit=False)
+
+    data = list(zip(labels,  # change to images if needed
+                    head_preds[0],
+                    evals[0],
+                    output[0],
+                    head_preds[1],
+                    evals[1],
+                    output[1],
+                    head_preds[2],
+                    evals[2],
+                    output[2],
+                    head_preds[3],
+                    evals[3],
+                    output[3],
+                    labels))
+
+    data_tmp = data
+    data_head = [None] * 4
+    for i in range(4):
+        data_tmp.sort(key=lambda x: x[2 + 3 * i], reverse=True)
+        data_head[i], data_tmp = data_tmp[:64], data_tmp[64:]
+
+    correct = [0] * 4
+    for i in range(4):
+        for d in data_head[i]:
+            if d[3 + 3 * i] == d[13]:
+                correct[i] += 1
+
+    wandb.log({"eval vs conf: splitting eval head 0": correct[0] / 64,
+               "eval vs conf: splitting eval head 1": correct[1] / 64,
+               "eval vs conf: splitting eval head 2": correct[2] / 64,
+               "eval vs conf: splitting eval head 3": correct[3] / 64,
+               "eval vs conf: splitting eval avg": (correct[0] + correct[1] + correct[2] + correct[3]) / 256},
+              commit=False)
+
+    def get_coef(e, c):
+        e = torch.squeeze(e)
+        e = torch.unsqueeze(e, 0)
+        c = torch.unsqueeze(c, 0)
+        return torch.corrcoef(torch.cat((e, c), 0))[0, 1]
+
+    wandb.log({"eval vs conf: corrcoef head 0": get_coef(evals[0], confidence[0]),
+               "eval vs conf: corrcoef head 1": get_coef(evals[1], confidence[1]),
+               "eval vs conf: corrcoef head 2": get_coef(evals[2], confidence[2]),
+               "eval vs conf: corrcoef head 3": get_coef(evals[3], confidence[3])},
+              commit=True)
