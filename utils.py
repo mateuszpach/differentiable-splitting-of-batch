@@ -129,3 +129,14 @@ def get_run_id(run_name: str):
     assert len(retrieved_runs) <= 1, f'retrieved_runs: {retrieved_runs}'
     if len(retrieved_runs) == 1:
         return retrieved_runs[0].id
+
+
+def init_wandb(run_name, run_dir, args):
+    entity = os.environ['WANDB_ENTITY']
+    project = os.environ['WANDB_PROJECT']
+    run_id = get_run_id(run_name)
+    if run_id is not None:
+        wandb.init(entity=entity, project=project, id=run_id, resume='must', dir=str(run_dir.resolve()))
+    else:
+        wandb.init(entity=entity, project=project, config=args, name=run_name, dir=str(run_dir.resolve()))
+    wandb.run.log_code('.', include_fn=lambda path: path.endswith('.py'))

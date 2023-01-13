@@ -29,10 +29,6 @@ parser.add_argument('--epochs',
                     help='number of epochs to train for',
                     type=int,
                     required=True)
-parser.add_argument('--eval_batches',
-                    help='number of bathes to evaluate on each time while training',
-                    type=int,
-                    default=2)
 parser.add_argument('--batch_size',
                     help='batch size for training',
                     type=int)
@@ -55,6 +51,10 @@ parser.add_argument('--scheduler_class',
 parser.add_argument('--scheduler_args',
                     help='arguments to be passed to the scheduler init function',
                     type=str)
+parser.add_argument('--epochs_per_eval',
+                    help='number of epochs between model evaluations',
+                    type=int,
+                    default=1)
 
 LOSS_NAME_MAP = {
     'ce': nn.CrossEntropyLoss,

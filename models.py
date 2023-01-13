@@ -1,5 +1,3 @@
-import math
-
 import torch
 from pytorch_model_summary import summary
 from torch import nn
@@ -37,7 +35,7 @@ class Resnet18With4Heads(nn.Module):
         for hidden_block, head_block in zip(self.hidden_blocks, self.head_blocks):
             x = hidden_block(x)
             y.append(head_block(x))
-        return y, None
+        return y, None, None
 
 
 class Resnet18FrozenWith4Heads(Resnet18With4Heads):
@@ -54,9 +52,8 @@ class TimeFunction(torch.autograd.Function):
     @staticmethod
     def forward(ctx, evals, weights, gamma, iters=6):
         """
-
         :param ctx:
-        :param evals: in (0, 1)
+        :param evals: in (0, inf)
         :param weights: in [0, 1]
         :param gamma: in [0, 1)
         :param iters:
@@ -64,16 +61,18 @@ class TimeFunction(torch.autograd.Function):
         """
 
         if gamma * weights.size(0) >= torch.sum(weights):
-            raise Exception("result undefined")
+            raise Exception("no solution")
 
-        to_leave = gamma * weights.size(0)
-        t = torch.zeros(1).to(utils.get_device())
+        # to_leave = (1 - gamma) * weights.size(0)
+        to_leave = torch.sum(weights) - gamma * weights.size(0)
+        t = torch.zeros(1, requires_grad=False).to(utils.get_device())
         for _ in range(iters):
             v = weights * torch.exp(-t * evals)
             b = torch.sum(v) - to_leave
             a = torch.squeeze(-v.t() @ evals, dim=1)
             t = t - b / a
 
+        # ctx.gamma = gamma
         ctx.save_for_backward(evals, weights, t)
 
         return t
@@ -82,9 +81,15 @@ class TimeFunction(torch.autograd.Function):
     def backward(ctx, grad_output):
         evals, weights, t = ctx.saved_tensors
 
-        dt_devals = -t * weights * torch.exp(-evals * t) / torch.sum(evals * weights * torch.exp(-evals * t))
+        dtimefunction_dt = -torch.sum(evals * weights * torch.exp(-evals * t))
+        dtimefunction_devals = -t * weights * torch.exp(-evals * t)
+        dtimefunction_dweights = torch.exp(-evals * t) - 1
 
-        return grad_output * dt_devals, None, None
+        dt_devals = -dtimefunction_devals / dtimefunction_dt
+        dt_dweights = -dtimefunction_dweights / dtimefunction_dt
+
+        return grad_output * dt_devals, grad_output * dt_dweights, None
+        # return grad_output * dt_devals, None, None
 
 
 class Resnet18With4HeadsDsob(nn.Module):
@@ -92,6 +97,7 @@ class Resnet18With4HeadsDsob(nn.Module):
         super(Resnet18With4HeadsDsob, self).__init__()
         self.number_of_heads = 4
         self.gammas = [0.25, 0.25, 0.25, None]
+        # self.gammas = [0.05, 0.05, 0.05, None]
 
         self.resnet = models.resnet18(weights=ResNet18_Weights.DEFAULT)
 
@@ -132,7 +138,7 @@ class Resnet18With4HeadsDsob(nn.Module):
         y = []
         w = []
         evals = []
-        weights = torch.ones(x.size(0), 1).to(utils.get_device())
+        weights = torch.ones(x.size(0), 1, requires_grad=False).to(utils.get_device())
         for hidden_block, head_block, eval_block, gamma in zip(self.hidden_blocks,
                                                                self.head_blocks,
                                                                self.eval_blocks,
@@ -144,9 +150,11 @@ class Resnet18With4HeadsDsob(nn.Module):
                 # print(torch.sum(weights))
                 if gamma:
                     t = self.time_function(eval, weights, gamma)
-                    consume_weights = weights * torch.exp(-t * eval)
+                    # consume_weights = weights * torch.exp(-t * eval)
+                    consume_weights = weights - weights * torch.exp(-t * eval)
                 else:
                     consume_weights = weights
+                # weights = weights - consume_weights.detach()
                 weights = weights - consume_weights
                 w.append(consume_weights)
 
@@ -171,7 +179,21 @@ MODEL_NAME_MAP = {
 }
 
 if __name__ == '__main__':
-    print(summary(Resnet18With4Heads(), torch.zeros((1, 3, 224, 224)), show_input=False))
-    print(summary(Resnet18FrozenWith4Heads(), torch.zeros((1, 3, 224, 224)), show_input=False))
-    print(summary(Resnet18With4HeadsDsob(), torch.zeros((1, 3, 224, 224)), show_input=False))
-    print(summary(Resnet18FrozenWith4HeadsDsob(), torch.zeros((1, 3, 224, 224)), show_input=False))
+    # print(summary(Resnet18With4Heads(), torch.zeros((1, 3, 224, 224)), show_input=False))
+    # print(summary(Resnet18FrozenWith4Heads(), torch.zeros((1, 3, 224, 224)), show_input=False))
+    print(summary(Resnet18With4HeadsDsob(), torch.zeros((2, 3, 224, 224)), show_input=False))
+    # print(summary(Resnet18FrozenWith4HeadsDsob(), torch.zeros((1, 3, 224, 224)), show_input=False))
+
+    # x = torch.zeros((5, 3, 224, 224))
+    # labels = torch.ones((5,), dtype=torch.long)
+    # model = Resnet18With4HeadsDsob()
+    # outputs, consume_weights, _ = model(x)
+    # criterion = nn.CrossEntropyLoss(reduction='none')
+    # # for each head and sample calculate criterion loss and weigh it by consume_weights
+    # losses = [criterion(head_outputs, labels) for head_outputs in outputs]
+    # if consume_weights:
+    #     losses = [l * w for l, w in zip(losses, consume_weights)]
+    # # for each head aggregate the scaled criterion losses by taking mean, and sum all heads losses
+    # loss = sum([torch.mean(l) for l in losses])
+    #
+    # make_dot(loss, params=dict(model.named_parameters())).render("graph2", format="png")
