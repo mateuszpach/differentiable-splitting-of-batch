@@ -63,7 +63,6 @@ class TimeFunction(torch.autograd.Function):
         if gamma * weights.size(0) >= torch.sum(weights):
             raise Exception("no solution")
 
-        # to_leave = (1 - gamma) * weights.size(0)
         to_leave = torch.sum(weights) - gamma * weights.size(0)
         t = torch.zeros(1, requires_grad=False).to(utils.get_device())
         for _ in range(iters):
@@ -72,7 +71,6 @@ class TimeFunction(torch.autograd.Function):
             a = torch.squeeze(-v.t() @ evals, dim=1)
             t = t - b / a
 
-        # ctx.gamma = gamma
         ctx.save_for_backward(evals, weights, t)
 
         return t
@@ -146,11 +144,8 @@ class Resnet18With4HeadsDsob(nn.Module):
             x = hidden_block(x)
             eval = torch.exp(eval_block(x))
             if self.train:
-                # print(gamma)
-                # print(torch.sum(weights))
                 if gamma:
                     t = self.time_function(eval, weights, gamma)
-                    # consume_weights = weights * torch.exp(-t * eval)
                     consume_weights = weights - weights * torch.exp(-t * eval)
                 else:
                     consume_weights = weights

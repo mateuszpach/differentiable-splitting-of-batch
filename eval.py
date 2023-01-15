@@ -20,8 +20,10 @@ def run_model(model: torch.nn.Module,
                 labels = labels.to(device, non_blocking=True)
                 outputs, consume_weights, evals = model(images)
                 outputs = [head_outputs.detach().cpu() for head_outputs in outputs]
-                consume_weights = [head_consume_weights.detach().cpu() for head_consume_weights in consume_weights]
-                evals = [head_evals.detach().cpu() for head_evals in evals]
+                if consume_weights:
+                    consume_weights = [head_consume_weights.detach().cpu() for head_consume_weights in consume_weights]
+                if evals:
+                    evals = [head_evals.detach().cpu() for head_evals in evals]
                 yield outputs, consume_weights, evals, labels.cpu()
     finally:
         model.train(saved_training)
@@ -58,6 +60,8 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
     eval_conf_corr = [0] * model.number_of_heads
     eval_conf_corr_mean = 0
 
+    return_thresholds_eval = False
+
     for batch_i, (outputs, consume_weights, evals, labels) in enumerate(run_model(model, data_loader)):
         batches += 1
         batch_size = labels.size(0)
@@ -72,18 +76,20 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
         b_losses = [torch.mean(l).item() for l in b_losses_na]
         b_losses_sum = sum(b_losses)
 
-        b_weighted_losses_na = [l * w for l, w in zip(b_losses, consume_weights)]
-        b_weighted_losses = [torch.mean(l).item() for l in b_weighted_losses_na]
-        b_weighted_losses_sum = sum(b_weighted_losses)
+        if consume_weights:
+            b_weighted_losses_na = [l * w for l, w in zip(b_losses_na, consume_weights)]
+            b_weighted_losses = [torch.mean(l).item() for l in b_weighted_losses_na]
+            b_weighted_losses_sum = sum(b_weighted_losses)
 
         # accuracies
         b_preds = [head_outputs.argmax(dim=1) for head_outputs in outputs]
         b_accuracies = [(head_preds == labels).sum().item() / batch_size for head_preds in b_preds]
         b_accuracies_mean = sum(b_accuracies) / len(b_accuracies)
 
-        b_weighted_accuracies = [((head_preds == labels).long() * w).sum().item() / (batch_size * w.sum()) for
-                                 head_preds, w in zip(b_preds, consume_weights)]
-        b_weighted_accuracies_mean = sum(b_weighted_accuracies) / len(b_weighted_accuracies)
+        if consume_weights:
+            b_weighted_accuracies = [((head_preds == labels).long() * w).sum().item() / (batch_size * w.sum()) for
+                                     head_preds, w in zip(b_preds, consume_weights)]
+            b_weighted_accuracies_mean = sum(b_weighted_accuracies) / len(b_weighted_accuracies)
 
         # splitting by confidence: batch is split into chunks (with gamma proportions),
         # we iterate over heads, head_i takes top gamma_i% samples by confidence and leaves rest for other heads
@@ -103,17 +109,18 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
         b_accuracies_conf_mean = sum(b_accuracies_conf) / len(b_accuracies_conf)
 
         # splitting by eval: analogous to splitting by confidence, but heads take by eval
-        b_accuracies_eval = []
-        b_thresholds_eval = []
-        indices = list(range(batch_size))
-        for chunk_i, chunk_size in enumerate(chunk_sizes):
-            indices.sort(key=lambda x: evals[chunk_i][x], reverse=True)
-            chunk_preds = torch.stack([b_preds[chunk_i][i] for i in indices[:chunk_size]])
-            chunk_labels = torch.stack([labels[i] for i in indices[:chunk_size]])
-            b_accuracies_eval.append((chunk_preds == chunk_labels).sum().item() / chunk_size)
-            b_thresholds_eval.append(evals[chunk_i][indices[chunk_size - 1]])
-            indices = indices[chunk_size:]
-        b_accuracies_eval_mean = sum(b_accuracies_eval) / len(b_accuracies_eval)
+        if evals:
+            b_accuracies_eval = []
+            b_thresholds_eval = []
+            indices = list(range(batch_size))
+            for chunk_i, chunk_size in enumerate(chunk_sizes):
+                indices.sort(key=lambda x: evals[chunk_i][x], reverse=True)
+                chunk_preds = torch.stack([b_preds[chunk_i][i] for i in indices[:chunk_size]])
+                chunk_labels = torch.stack([labels[i] for i in indices[:chunk_size]])
+                b_accuracies_eval.append((chunk_preds == chunk_labels).sum().item() / chunk_size)
+                b_thresholds_eval.append(evals[chunk_i][indices[chunk_size - 1]])
+                indices = indices[chunk_size:]
+            b_accuracies_eval_mean = sum(b_accuracies_eval) / len(b_accuracies_eval)
 
         # splitting randomly: analogous to splitting by confidence, but heads take randomly
         b_accuracies_rand = []
@@ -144,48 +151,53 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
         b_sizes_conf_thresh_mean = sum(b_sizes_conf_thresh) / len(b_sizes_conf_thresh)
 
         # splitting by eval thresholds: analogous to splitting by confidence thresholds, but eval
-        b_accuracies_eval_thresh = []
-        b_sizes_eval_thresh = []
-        indices = list(range(batch_size))
-        for chunk_i, threshold in enumerate(ext_thresholds_eval if ext_thresholds_eval else b_thresholds_eval):
-            indices.sort(key=lambda x: evals[chunk_i][x], reverse=True)
-            chunk_size = len([i for i in indices if evals[chunk_i][i] >= threshold])
-            chunk_preds = torch.stack([b_preds[chunk_i][i] for i in indices[:chunk_size]])
-            chunk_labels = torch.stack([labels[i] for i in indices[:chunk_size]])
-            b_accuracies_eval_thresh.append((chunk_preds == chunk_labels).sum().item() / chunk_size)
-            b_sizes_eval_thresh.append(chunk_size)
-            indices = indices[chunk_size:]
-        b_accuracies_eval_thresh_mean = sum(b_accuracies_eval_thresh) / len(b_accuracies_eval_thresh)
-        b_sizes_eval_thresh_mean = sum(b_sizes_eval_thresh) / len(b_sizes_eval_thresh)
+        if evals:
+            b_accuracies_eval_thresh = []
+            b_sizes_eval_thresh = []
+            indices = list(range(batch_size))
+            for chunk_i, threshold in enumerate(ext_thresholds_eval if ext_thresholds_eval else b_thresholds_eval):
+                indices.sort(key=lambda x: evals[chunk_i][x], reverse=True)
+                chunk_size = len([i for i in indices if evals[chunk_i][i] >= threshold])
+                chunk_preds = torch.stack([b_preds[chunk_i][i] for i in indices[:chunk_size]])
+                chunk_labels = torch.stack([labels[i] for i in indices[:chunk_size]])
+                b_accuracies_eval_thresh.append((chunk_preds == chunk_labels).sum().item() / chunk_size)
+                b_sizes_eval_thresh.append(chunk_size)
+                indices = indices[chunk_size:]
+            b_accuracies_eval_thresh_mean = sum(b_accuracies_eval_thresh) / len(b_accuracies_eval_thresh)
+            b_sizes_eval_thresh_mean = sum(b_sizes_eval_thresh) / len(b_sizes_eval_thresh)
 
         # correlations between eval and confidence
-        b_eval_conf_corr = []
-        for head_i, (head_evals, head_confidences) in enumerate(zip(evals, confidences)):
-            e = torch.unsqueeze(torch.squeeze(head_evals), 0)
-            c = torch.unsqueeze(head_confidences, 0)
-            b_eval_conf_corr.append(torch.corrcoef(torch.cat((e, c), 0))[0, 1])
-        b_eval_conf_corr_mean = sum(b_eval_conf_corr) / len(b_eval_conf_corr)
+        if evals:
+            b_eval_conf_corr = []
+            for head_i, (head_evals, head_confidences) in enumerate(zip(evals, confidences)):
+                e = torch.unsqueeze(torch.squeeze(head_evals), 0)
+                c = torch.unsqueeze(head_confidences, 0)
+                b_eval_conf_corr.append(torch.corrcoef(torch.cat((e, c), 0))[0, 1])
+            b_eval_conf_corr_mean = sum(b_eval_conf_corr) / len(b_eval_conf_corr)
 
         # sum all metrics over batches
         losses = [sum(x) for x in zip(losses, b_losses)]
         losses_sum += b_losses_sum
 
-        weighted_losses = [sum(x) for x in zip(weighted_losses, b_weighted_losses)]
-        weighted_losses_sum += b_weighted_losses_sum
+        if consume_weights:
+            weighted_losses = [sum(x) for x in zip(weighted_losses, b_weighted_losses)]
+            weighted_losses_sum += b_weighted_losses_sum
 
         accuracies = [sum(x) for x in zip(accuracies, b_accuracies)]
         accuracies_mean += b_accuracies_mean
 
-        weighted_accuracies = [sum(x) for x in zip(weighted_accuracies, b_weighted_accuracies)]
-        weighted_accuracies_mean += b_weighted_accuracies_mean
+        if consume_weights:
+            weighted_accuracies = [sum(x) for x in zip(weighted_accuracies, b_weighted_accuracies)]
+            weighted_accuracies_mean += b_weighted_accuracies_mean
 
         accuracies_conf = [sum(x) for x in zip(accuracies_conf, b_accuracies_conf)]
         accuracies_conf_mean += b_accuracies_conf_mean
         thresholds_conf = [sum(x) for x in zip(thresholds_conf, b_thresholds_conf)]
 
-        accuracies_eval = [sum(x) for x in zip(accuracies_eval, b_accuracies_eval)]
-        accuracies_eval_mean += b_accuracies_eval_mean
-        thresholds_eval = [sum(x) for x in zip(thresholds_eval, b_thresholds_eval)]
+        if evals:
+            accuracies_eval = [sum(x) for x in zip(accuracies_eval, b_accuracies_eval)]
+            accuracies_eval_mean += b_accuracies_eval_mean
+            thresholds_eval = [sum(x) for x in zip(thresholds_eval, b_thresholds_eval)]
 
         accuracies_rand = [sum(x) for x in zip(accuracies_rand, b_accuracies_rand)]
         accuracies_rand_mean += b_accuracies_rand_mean
@@ -195,19 +207,24 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
         sizes_conf_thresh = [sum(x) for x in zip(sizes_conf_thresh, b_sizes_conf_thresh)]
         sizes_conf_thresh_mean += b_sizes_conf_thresh_mean
 
-        accuracies_eval_thresh = [sum(x) for x in zip(accuracies_eval_thresh, b_accuracies_eval_thresh)]
-        accuracies_eval_thresh_mean += b_accuracies_eval_thresh_mean
-        sizes_eval_thresh = [sum(x) for x in zip(sizes_eval_thresh, b_sizes_eval_thresh)]
-        sizes_eval_thresh_mean += b_sizes_eval_thresh_mean
+        if evals:
+            accuracies_eval_thresh = [sum(x) for x in zip(accuracies_eval_thresh, b_accuracies_eval_thresh)]
+            accuracies_eval_thresh_mean += b_accuracies_eval_thresh_mean
+            sizes_eval_thresh = [sum(x) for x in zip(sizes_eval_thresh, b_sizes_eval_thresh)]
+            sizes_eval_thresh_mean += b_sizes_eval_thresh_mean
 
-        eval_conf_corr = [sum(x) for x in zip(eval_conf_corr, b_eval_conf_corr)]
-        eval_conf_corr_mean += b_eval_conf_corr_mean
+        if evals:
+            eval_conf_corr = [sum(x) for x in zip(eval_conf_corr, b_eval_conf_corr)]
+            eval_conf_corr_mean += b_eval_conf_corr_mean
 
         # single batch metrics
         if batch_i == 0:
-            consume_weights_shrank = [x[:30] for x in consume_weights]
-            plot_weights_distribution_stacked(consume_weights_shrank, epoch)
-            plot_weights_distribution(consume_weights_shrank, epoch)
+            if consume_weights:
+                consume_weights_shrank = [x[:30] for x in consume_weights]
+                plot_weights_distribution_stacked(consume_weights_shrank, epoch)
+                plot_weights_distribution(consume_weights_shrank, epoch)
+            if evals:
+                return_thresholds_eval = True
 
     # divide by number of batches to get means over batches
     losses = [x / batches for x in losses]
@@ -274,7 +291,7 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
                f'{dataset_name}_accuracies_eval_thresh_mean': accuracies_eval_thresh_mean,
                f'{dataset_name}_eval_conf_corr_mean': eval_conf_corr_mean}, step=epoch)
 
-    return thresholds_conf, thresholds_eval
+    return thresholds_conf, (thresholds_eval if return_thresholds_eval else None)
 
 
 def evaluate_on_test_and_eval_datasets(model, criterion, test_loader, train_eval_loader, epoch,
@@ -283,7 +300,9 @@ def evaluate_on_test_and_eval_datasets(model, criterion, test_loader, train_eval
     thresholds_conf, thresholds_eval = evaluate(model, criterion, train_eval_loader, 'train', epoch, gammas)
     # make sure the last head consumes the remainders
     thresholds_conf[-1] = 0
-    thresholds_eval[-1] = 0
+    if thresholds_eval:
+        thresholds_eval[-1] = 0
     # evaluate on test dataset using pre-calculated thresholds
+    # TODO: fix splitting by predefined thresholds and remove line below
+    thresholds_conf = thresholds_eval = None
     evaluate(model, criterion, test_loader, 'test', epoch, gammas, thresholds_conf, thresholds_eval)
-    # evaluate(model, criterion, test_loader, 'test', epoch, gammas)
