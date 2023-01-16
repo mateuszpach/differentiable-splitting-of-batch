@@ -53,23 +53,23 @@ class TimeFunction(torch.autograd.Function):
     def forward(ctx, evals, weights, gamma, iters=6):
         """
         :param ctx:
-        :param evals: in (0, inf)
-        :param weights: in [0, 1]
-        :param gamma: in [0, 1)
-        :param iters:
-        :return:
+        :param evals: in (0, inf) - how much we like a cookie, in overleaf it's p
+        :param weights: in [0, 1] - weights after subtracting bites of previous heads
+        :param gamma: in [0, 1) - what fraction of sum of all initial (not current!!!) weights we'd like to eat, we assume initial weights were 1 so their sum is weights.size(0)
+        :param iters: - how many steps of newton method
+        :return: t s.t. weights[i] * exp(-t * evals[i]) equals to how much of i-th cookie should be left for the next heads
         """
 
         if gamma * weights.size(0) >= torch.sum(weights):
-            raise Exception("no solution")
+            raise Exception("no solution")  # exponent does not cross the line, we can't eat more than remains
 
-        to_leave = torch.sum(weights) - gamma * weights.size(0)
+        to_leave = torch.sum(weights) - gamma * weights.size(0)  # total weight of cookies which should be left
         t = torch.zeros(1, requires_grad=False).to(utils.get_device())
         for _ in range(iters):
-            v = weights * torch.exp(-t * evals)
-            b = torch.sum(v) - to_leave
-            a = torch.squeeze(-v.t() @ evals, dim=1)
-            t = t - b / a
+            v = weights * torch.exp(-t * evals)         # vector batch_size x 1
+            b = torch.sum(v) - to_leave                 # scalar: f(t) = w_1 * exp(-t * p_1) + ... - to_leave
+            a = torch.squeeze(-v.t() @ evals, dim=1)    # scalar: f'(t) = -p_1 * w_1 * exp(-t * p_1)
+            t = t - b / a                               # scalar: t_{n+1} = t_n - f(t_n) / f'(t_n)
 
         ctx.save_for_backward(evals, weights, t)
 
@@ -87,7 +87,6 @@ class TimeFunction(torch.autograd.Function):
         dt_dweights = -dtimefunction_dweights / dtimefunction_dt
 
         return grad_output * dt_devals, grad_output * dt_dweights, None
-        # return grad_output * dt_devals, None, None
 
 
 class Resnet18With4HeadsDsob(nn.Module):
@@ -147,6 +146,7 @@ class Resnet18With4HeadsDsob(nn.Module):
                 if gamma:
                     t = self.time_function(eval, weights, gamma)
                     consume_weights = weights - weights * torch.exp(-t * eval)
+                    assert torch.isclose(torch.sum(consume_weights), torch.Tensor([gamma * x.size(0)]).to(utils.get_device()))  # we consumed batch_size * gamma
                 else:
                     consume_weights = weights
                 # weights = weights - consume_weights.detach()
@@ -177,6 +177,10 @@ if __name__ == '__main__':
     # print(summary(Resnet18With4Heads(), torch.zeros((1, 3, 224, 224)), show_input=False))
     # print(summary(Resnet18FrozenWith4Heads(), torch.zeros((1, 3, 224, 224)), show_input=False))
     print(summary(Resnet18With4HeadsDsob(), torch.zeros((2, 3, 224, 224)), show_input=False))
+    # print(Resnet18With4HeadsDsob())
+    # for child in Resnet18With4HeadsDsob().children():
+    #     for param in child.parameters():
+    #         print(param.requires_grad)
     # print(summary(Resnet18FrozenWith4HeadsDsob(), torch.zeros((1, 3, 224, 224)), show_input=False))
 
     # x = torch.zeros((5, 3, 224, 224))

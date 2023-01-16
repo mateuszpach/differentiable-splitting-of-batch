@@ -31,3 +31,17 @@ def plot_weights_distribution(weights, epoch):
         ax.set_ylabel('Weights')
 
         wandb.log({f"plot_weights_distribution_head_{i}": plt}, step=epoch)
+
+
+def plot_evals_distribution(evals, epoch):
+    labels = list(range(evals[0].size(0)))
+    width = 0.9
+
+    for i, w in enumerate(evals):
+        fig, ax = plt.subplots()
+        ax.bar(labels, w.squeeze(), width)
+
+        ax.set_xlabel('Images')
+        ax.set_ylabel('Evals')
+
+        wandb.log({f"plot_evals_distribution_head_{i}": plt}, step=epoch)

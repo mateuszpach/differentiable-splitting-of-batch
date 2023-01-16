@@ -4,7 +4,7 @@ from typing import List, Tuple
 import torch
 import wandb
 
-from plots import plot_weights_distribution_stacked, plot_weights_distribution
+from plots import plot_weights_distribution_stacked, plot_weights_distribution, plot_evals_distribution
 from utils import get_device
 
 
@@ -225,6 +225,8 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
                 plot_weights_distribution(consume_weights_shrank, epoch)
             if evals:
                 return_thresholds_eval = True
+                evals_shrank = [x[:30] for x in evals]
+                plot_evals_distribution(evals_shrank, epoch)
 
     # divide by number of batches to get means over batches
     losses = [x / batches for x in losses]
