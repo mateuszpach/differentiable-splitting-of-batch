@@ -70,4 +70,5 @@ SCHEDULER_NAME_MAP = {
     'reduce_on_plateau': optim.lr_scheduler.ReduceLROnPlateau,
     'cosine': optim.lr_scheduler.CosineAnnealingLR,
     'cosine_warm_restarts': optim.lr_scheduler.CosineAnnealingWarmRestarts,
+    'step_lr':  optim.lr_scheduler.StepLR
 }
