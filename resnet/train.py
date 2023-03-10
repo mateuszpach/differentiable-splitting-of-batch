@@ -75,14 +75,20 @@ def train(args):
             #          probabilities of matching given class in each head
             # consume_weights: list of nr_heads tensors, each tensor of size (batch_size, 1)
             #                  how much of each sample should be consumed in each head
+            # if epoch >= 100:
+            #     outputs, consume_weights, _ = model(images, min((epoch - 50) / (args.epochs - 51) + 0.1, 1))
+            # else:
+            #     outputs, consume_weights, _ = model(images, 1)
             outputs, consume_weights, _ = model(images)
 
             # for each head and sample calculate criterion loss and weigh it by consume_weights
             losses = [criterion(head_outputs, labels) for head_outputs in outputs]
             if consume_weights:
+                # sf = (epoch - 50) / (args.epochs - 51)
+                # losses = [l * w * sf + l * (1 - sf) for l, w in zip(losses, consume_weights)]
                 losses = [l * w for l, w in zip(losses, consume_weights)]
             # for each head aggregate the scaled criterion losses by taking mean, and sum all heads losses
-            loss = sum([torch.mean(l) for l in losses])
+            loss = sum([torch.mean(l) for l in losses]) / len(losses)
 
             optimizer.zero_grad()
             loss.backward()

@@ -18,7 +18,11 @@ def run_model(model: torch.nn.Module,
             for batch, (images, labels) in enumerate(data_loader):
                 images = images.to(device, non_blocking=True)
                 labels = labels.to(device, non_blocking=True)
-                outputs, consume_weights, evals = model(images)
+                results = model(images)
+                # unpack manually as there could be more results e.g. gammas
+                outputs = results[0]
+                consume_weights = results[1]
+                evals = results[2]
                 outputs = [head_outputs.detach().cpu() for head_outputs in outputs]
                 if consume_weights:
                     consume_weights = [head_consume_weights.detach().cpu() for head_consume_weights in consume_weights]
@@ -67,11 +71,17 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
         batch_size = labels.size(0)
 
         # note: we round instead ceiling, so it is important that last gamma is None when dealing with floats
-        chunk_sizes = [round(batch_size * gamma) for gamma in gammas if gamma is not None]
+        # note: we force at least one sample for each head
+        chunk_sizes = [max(round(batch_size * gamma), 1) for gamma in gammas if gamma is not None]
+
         if gammas[-1] is None:
             chunk_sizes.append(batch_size - sum(chunk_sizes))
 
-        # losses
+        # losses (only if criterion is given, else 0)
+        if not criterion:
+            def criterion(_, labels):
+                return torch.zeros_like(labels, dtype=torch.float)
+
         b_losses_na = [criterion(head_outputs, labels) for head_outputs in outputs]
         b_losses = [torch.mean(l).item() for l in b_losses_na]
         b_losses_sum = sum(b_losses)
@@ -95,7 +105,6 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
         # we iterate over heads, head_i takes top gamma_i% samples by confidence and leaves rest for other heads
         # we measure accuracy of the heads on respective chunks
         confidences = [head_outputs.max(dim=1).values for head_outputs in outputs]
-
         b_accuracies_conf = []
         b_thresholds_conf = []
         indices = list(range(batch_size))
@@ -142,6 +151,8 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
         for chunk_i, threshold in enumerate(ext_thresholds_conf if ext_thresholds_conf else b_thresholds_conf):
             indices.sort(key=lambda x: confidences[chunk_i][x], reverse=True)
             chunk_size = len([i for i in indices if confidences[chunk_i][i] >= threshold])
+            if chunk_size == 0:
+                chunk_size += 1
             chunk_preds = torch.stack([b_preds[chunk_i][i] for i in indices[:chunk_size]])
             chunk_labels = torch.stack([labels[i] for i in indices[:chunk_size]])
             b_accuracies_conf_thresh.append((chunk_preds == chunk_labels).sum().item() / chunk_size)
@@ -158,6 +169,8 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
             for chunk_i, threshold in enumerate(ext_thresholds_eval if ext_thresholds_eval else b_thresholds_eval):
                 indices.sort(key=lambda x: evals[chunk_i][x], reverse=True)
                 chunk_size = len([i for i in indices if evals[chunk_i][i] >= threshold])
+                if chunk_size == 0:
+                    chunk_size += 1
                 chunk_preds = torch.stack([b_preds[chunk_i][i] for i in indices[:chunk_size]])
                 chunk_labels = torch.stack([labels[i] for i in indices[:chunk_size]])
                 b_accuracies_eval_thresh.append((chunk_preds == chunk_labels).sum().item() / chunk_size)
@@ -265,6 +278,13 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
     eval_conf_corr = [x / batches for x in eval_conf_corr]
     eval_conf_corr_mean /= batches
 
+    # fix last gamma
+    if gammas[-1] is None:
+        gammas[-1] = 1 - sum(gammas[:-1])
+
+    # expected exit time
+    current_eet = sum(gamma * (i + 1) for i, gamma in enumerate(gammas))
+
     # send to wandb
     for head_id in range(model.number_of_heads):
         wandb.log({f'{dataset_name}_loss_{head_id}': losses[head_id],
@@ -280,7 +300,8 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
                    f'{dataset_name}_size_conf_thresh_{head_id}': sizes_conf_thresh[head_id],
                    f'{dataset_name}_accuracy_eval_thresh_{head_id}': accuracies_eval_thresh[head_id],
                    f'{dataset_name}_size_eval_thresh_{head_id}': sizes_eval_thresh[head_id],
-                   f'{dataset_name}_eval_conf_corr_{head_id}': eval_conf_corr[head_id]}, step=epoch)
+                   f'{dataset_name}_eval_conf_corr_{head_id}': eval_conf_corr[head_id],
+                   f'{dataset_name}_gamma_{head_id}': gammas[head_id]}, step=epoch)
 
     wandb.log({f'{dataset_name}_losses_sum': losses_sum,
                f'{dataset_name}_weighted_losses_sum': weighted_losses_sum,
@@ -291,7 +312,8 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
                f'{dataset_name}_accuracies_rand_mean': accuracies_rand_mean,
                f'{dataset_name}_accuracies_conf_thresh_mean': accuracies_conf_thresh_mean,
                f'{dataset_name}_accuracies_eval_thresh_mean': accuracies_eval_thresh_mean,
-               f'{dataset_name}_eval_conf_corr_mean': eval_conf_corr_mean}, step=epoch)
+               f'{dataset_name}_eval_conf_corr_mean': eval_conf_corr_mean,
+               f'{dataset_name}_current_eet': current_eet}, step=epoch)
 
     return thresholds_conf, (thresholds_eval if return_thresholds_eval else None)
 
@@ -299,12 +321,12 @@ def evaluate(model, criterion, data_loader, dataset_name, epoch, gammas, ext_thr
 def evaluate_on_test_and_eval_datasets(model, criterion, test_loader, train_eval_loader, epoch,
                                        gammas=(0.25, 0.25, 0.25, None)):
     # evaluate on train dataset and get thresholds
+    gammas[-1] = None
     thresholds_conf, thresholds_eval = evaluate(model, criterion, train_eval_loader, 'train', epoch, gammas)
     # make sure the last head consumes the remainders
     thresholds_conf[-1] = 0
     if thresholds_eval:
         thresholds_eval[-1] = 0
     # evaluate on test dataset using pre-calculated thresholds
-    # TODO: fix splitting by predefined thresholds and remove line below
-    thresholds_conf = thresholds_eval = None
+    gammas[-1] = None
     evaluate(model, criterion, test_loader, 'test', epoch, gammas, thresholds_conf, thresholds_eval)

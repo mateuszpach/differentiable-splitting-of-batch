@@ -55,6 +55,19 @@ parser.add_argument('--epochs_per_eval',
                     help='number of epochs between model evaluations',
                     type=int,
                     default=1)
+parser.add_argument('--base_model_state_path',
+                    help='base model to be optimized for expected exit time',
+                    type=Path,
+                    default=None)
+parser.add_argument('--expected_exit_time',
+                    help='expected exit time (in heads)',
+                    type=float,
+                    default=2)
+parser.add_argument('--eet_loss_factor',
+                    help='weight of eet_loss',
+                    type=float,
+                    default=1)
+
 
 LOSS_NAME_MAP = {
     'ce': nn.CrossEntropyLoss,

@@ -1,0 +1,14 @@
+{
+  "save_dir": "save_dir",
+  "run_name": "run_sst2",
+  "train_strategy": "baseline",
+  "specialize_after": 0.2,
+  "task_name": "sst2",
+  "pre_trained_models_root": null,
+  "pre_trained_models_dir": [],
+  "seed": 23,
+  "epochs": 5,
+  "eval_steps": 10,
+  "learning_rate": 2e-5,
+  "lr_scheduler_type": "cosine"
+}

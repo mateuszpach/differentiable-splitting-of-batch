@@ -53,7 +53,7 @@ class TimeFunction(torch.autograd.Function):
         :param evals: in (0, inf) - how much we like a cookie, in overleaf it's p
         :param weights: in [0, 1] - weights after subtracting bites of previous heads
         :param gamma: in [0, 1) - what fraction of sum of all initial (not current!!!) weights we'd like to eat, we assume initial weights were 1 so their sum is weights.size(0)
-        :param iters: - how many steps of newton method
+        :param iters: - how many steps of newton's method
         :return: t s.t. weights[i] * exp(-t * evals[i]) equals to how much of i-th cookie should be left for the next heads
         """
 
@@ -79,12 +79,13 @@ class TimeFunction(torch.autograd.Function):
         dtimefunction_dt = -torch.sum(evals * weights * torch.exp(-evals * t))
         dtimefunction_devals = -t * weights * torch.exp(-evals * t)
         dtimefunction_dweights = torch.exp(-evals * t) - 1
+        dtimefunction_dgamma = weights.size(0)
 
         dt_devals = -dtimefunction_devals / dtimefunction_dt
         dt_dweights = -dtimefunction_dweights / dtimefunction_dt
+        dt_dgamma = -dtimefunction_dgamma / dtimefunction_dt
 
-        # return grad_output * dt_devals, grad_output * dt_dweights, None
-        return grad_output * dt_devals, None, None
+        return grad_output * dt_devals, grad_output * dt_dweights, grad_output * dt_dgamma
 
 
 class Resnet18With4HeadsDsob(nn.Module):
@@ -180,13 +181,12 @@ class Resnet18With4HeadsDsobConf(nn.Module):
             nn.Linear(in_features=in_channels, out_features=10, bias=True)
         )
 
-    def forward(self, x):
+    def forward(self, x, spec_factor=1.0):
         x = self.init_block(x)
         y = []
         w = []
         evals = []
         weights = torch.ones(x.size(0), 1, requires_grad=False).to(utils.get_device())
-        eps = 1e-5
         for hidden_block, head_block, gamma in zip(self.hidden_blocks,
                                                    self.head_blocks,
                                                    self.gammas):
@@ -196,20 +196,25 @@ class Resnet18With4HeadsDsobConf(nn.Module):
             eval = torch.softmax(hx, dim=1)
             eval = torch.unsqueeze(-torch.log(
                 1 - torch.max(eval, dim=1).values - (torch.sum(eval, dim=1) - torch.max(eval, dim=1).values) / (
-                        eval.size(1) - 1) + eps
+                        eval.size(1) - 1) + 1e-5
             ), 1)
             eval = torch.relu(eval)
             eval = torch.softmax(eval, dim=0)
             if self.train:
                 if gamma:
-                    t = self.time_function(eval, weights, gamma)
+                    spec_gamma = -(1 - gamma) * spec_factor + 1  # gamma adjusted to specialization factor (100->25)
+                    t = self.time_function(eval, weights, spec_gamma)
                     consume_weights = weights - weights * torch.exp(-t * eval)
                     assert torch.isclose(
-                        torch.sum(consume_weights), torch.Tensor([gamma * x.size(0)]).to(utils.get_device()), atol=0.1
-                    )  # we consumed batch_size * gamma
+                        torch.sum(consume_weights),
+                        torch.Tensor([x.size(0) * spec_gamma]).to(utils.get_device()),
+                        atol=1)  # we consumed batch_size * spec_gamma
+
+                    t = self.time_function(eval, weights, gamma * spec_factor)  # pretend we consumed less (0->25)
+                    weights = weights * torch.exp(-t * eval)
                 else:
                     consume_weights = weights
-                weights = weights - consume_weights
+                    weights = torch.zeros_like(weights)
                 w.append(consume_weights)
 
             y.append(hx)
@@ -300,6 +305,59 @@ class Resnet18FrozenWith4HeadsDsobShortAft(Resnet18With4HeadsDsobShortAft):
                 param.requires_grad = False
 
 
+class ExpectedExitTime(nn.Module):
+    def __init__(self, base_model):
+        super(ExpectedExitTime, self).__init__()
+
+        self.base_model = base_model
+        for child in self.base_model.children():
+            for param in child.parameters():
+                param.requires_grad = False
+
+        self.number_of_heads = base_model.number_of_heads
+
+        self.time_function = TimeFunction.apply
+
+        self.phis = torch.nn.Parameter(torch.rand(self.number_of_heads).to(utils.get_device()))
+        # self.phis = torch.nn.Parameter(
+        #     torch.tensor([1 / self.number_of_heads] * self.number_of_heads).to(utils.get_device())
+        # )
+        # self.phis = torch.nn.Parameter(
+        #     torch.tensor([0.00, 0.00, 0.00, 1.00]).to(utils.get_device())
+        # )
+
+    @staticmethod
+    def eval_fn(logits):
+        max = torch.max(logits, dim=1).values
+        evals = torch.sigmoid(max)
+        evals = torch.unsqueeze(evals, 1)
+        return evals
+
+    def forward(self, x):
+        batch_size = x.size(0)
+        all_logits, _, _ = self.base_model(x)
+
+        remaining_weights = torch.ones(batch_size, 1, requires_grad=False).to(utils.get_device())
+        all_evals = [self.eval_fn(logits) for logits in all_logits]
+        all_gammas = torch.softmax(self.phis, dim=0)
+        all_consume_weights = []
+        for head_id, (logits, evals, gamma) in enumerate(zip(all_logits, all_evals, all_gammas)):
+
+            if head_id != self.number_of_heads - 1:
+                t = self.time_function(evals, remaining_weights, gamma)
+                consume_weights = remaining_weights - remaining_weights * torch.exp(-t * evals)
+                assert torch.isclose(
+                    torch.sum(consume_weights), torch.Tensor([gamma * batch_size]).to(utils.get_device()), atol=0.1
+                )  # we consumed batch_size * gamma
+            else:
+                consume_weights = remaining_weights
+
+            remaining_weights = remaining_weights - consume_weights
+            all_consume_weights.append(consume_weights)
+
+        return all_logits, all_consume_weights, all_evals, all_gammas
+
+
 MODEL_NAME_MAP = {
     'resnet18_4heads': Resnet18With4Heads,
     'resnet18_frozen_4heads': Resnet18FrozenWith4Heads,
@@ -309,15 +367,16 @@ MODEL_NAME_MAP = {
     'resnet18_frozen_4heads_dsob_conf': Resnet18FrozenWith4HeadsDsobConf,
     'resnet18_4heads_dsob_short_aft': Resnet18With4HeadsDsobShortAft,
     'resnet18_frozen_4heads_dsob_short_aft': Resnet18FrozenWith4HeadsDsobShortAft,
+    'expected_exit_time': ExpectedExitTime,
 }
 
 if __name__ == '__main__':
-    print(summary(Resnet18With4Heads(), torch.zeros((5, 3, 224, 224)), show_input=False))
+    # print(summary(ExpectedExitTime(Resnet18With4Heads()), torch.zeros((5, 3, 224, 224)), show_input=False))
     # print(summary(Resnet18FrozenWith4Heads(), torch.zeros((1, 3, 224, 224)), show_input=False))
-    print(summary(Resnet18With4HeadsDsobConf(), torch.zeros((2, 3, 224, 224)), show_input=False))
-    print(summary(Resnet18With4HeadsDsobShortAft(), torch.zeros((2, 3, 224, 224)), show_input=False))
-    # print(Resnet18With4HeadsDsob())
-    print(Resnet18With4Heads())
+    # print(summary(Resnet18With4HeadsDsobConf(), torch.zeros((2, 3, 224, 224)), show_input=False))
+    # print(summary(Resnet18With4HeadsDsobShortAft(), torch.zeros((2, 3, 224, 224)), show_input=False))
+    print(ExpectedExitTime(Resnet18With4Heads()))
+    # print(Resnet18With4Heads())
     # print(summary(Resnet18With4HeadsDsobConf(), torch.zeros((2, 3, 224, 224)), show_input=False))
     # print(Resnet18With4HeadsDsob())
     # for child in Resnet18With4HeadsDsob().children():
